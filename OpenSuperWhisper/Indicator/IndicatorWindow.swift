@@ -7,6 +7,7 @@ enum RecordingState {
     case connecting
     case recording
     case decoding
+    case processing
     case busy
     case noMicrophone
 }
@@ -68,7 +69,7 @@ class IndicatorViewModel: ObservableObject {
     }
     
     var isTranscriptionBusy: Bool {
-        transcriptionService.isTranscribing || transcriptionQueue.isProcessing
+        transcriptionService.isTranscribing || transcriptionQueue.isProcessing || state == .processing
     }
     
     func showBusyMessage() {
@@ -168,6 +169,24 @@ class IndicatorViewModel: ObservableObject {
                     print("start decoding...")
                     let duration = await AudioUtil.audioDuration(url: tempURL)
                     let text = try await transcriptionService.transcribeAudio(url: tempURL, settings: Settings())
+                    let recordingId = UUID()
+                    
+                    await MainActor.run {
+                        self.state = .processing
+                    }
+                    
+                    let (processed, sendError) = await BrainFlowIntegrationSender.shared.send(
+                        audioURL: tempURL,
+                        transcription: text,
+                        recordingId: recordingId.uuidString,
+                        clipboardText: ClipboardMonitor.shared.currentText()
+                    )
+                    
+                    if let sendError = sendError {
+                        print("BrainFlow send error: \(sendError)")
+                    }
+                    
+                    let outputText = processed?.isEmpty == false ? processed! : text
                     
                     if text.isEmpty {
                         try? FileManager.default.removeItem(at: tempURL)
@@ -175,12 +194,12 @@ class IndicatorViewModel: ObservableObject {
                     } else {
                         let timestamp = Date()
                         let fileName = "\(Int(timestamp.timeIntervalSince1970)).wav"
-                        let recordingId = UUID()
-                        let newRecording = Recording(
+                        var newRecording = Recording(
                             id: recordingId,
                             timestamp: timestamp,
                             fileName: fileName,
                             transcription: text,
+                            processedText: processed?.isEmpty == false ? processed : nil,
                             duration: duration,
                             status: .completed,
                             progress: 1.0,
@@ -193,8 +212,8 @@ class IndicatorViewModel: ObservableObject {
                             self.recordingStore.addRecording(newRecording)
                         }
                         
-                        insertText(text)
-                        print("Transcription result: \(text)")
+                        insertText(outputText)
+                        print("Processed result: \(outputText)")
                     }
                 } catch {
                     print("Error transcribing audio: \(error)")
@@ -220,19 +239,11 @@ class IndicatorViewModel: ObservableObject {
         let prefs = AppPreferences.shared
 
         if prefs.autoPasteTranscription {
-            if prefs.autoCopyToClipboard {
-                // Paste and keep in clipboard
-                ClipboardUtil.insertTextAndKeepInClipboard(finalText)
-            } else {
-                // Paste but restore original clipboard (legacy behavior)
-                ClipboardUtil.insertText(finalText)
-            }
+            // Keep processed output on the clipboard so it can be pasted again elsewhere.
+            ClipboardUtil.insertTextAndKeepInClipboard(finalText)
         } else if prefs.autoCopyToClipboard {
-            // Only copy to clipboard, don't paste
             ClipboardUtil.copyToClipboard(finalText)
         }
-        // If both are false, do nothing
-
     }
     
     static func applyPostProcessing(_ text: String) -> String {
@@ -385,7 +396,18 @@ struct IndicatorWindow: View {
                         .font(.system(size: 13, weight: .semibold))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                
+
+            case .processing:
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                        .frame(width: 24)
+                    
+                    Text("Processing...")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
             case .busy:
                 HStack(spacing: 8) {
                     Image(systemName: "hourglass")

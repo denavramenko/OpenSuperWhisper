@@ -276,6 +276,19 @@ class TranscriptionQueue: ObservableObject {
                     isRegeneration: false
                 )
 
+                let (processed, _) = await BrainFlowIntegrationSender.shared.send(
+                    audioURL: finalURL,
+                    transcription: text,
+                    recordingId: recording.id.uuidString,
+                    clipboardText: ClipboardMonitor.shared.currentText()
+                )
+
+                if let processed = processed, !processed.isEmpty {
+                    var updatedRecording = recording
+                    updatedRecording.processedText = processed
+                    try? await recordingStore.updateRecordingSync(updatedRecording)
+                }
+
             } catch {
                 if !isRecordingCancelled(recording.id) && !Task.isCancelled {
                     await recordingStore.updateRecordingProgressOnlySync(

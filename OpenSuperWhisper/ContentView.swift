@@ -190,6 +190,14 @@ class ContentViewModel: ObservableObject {
                     print("start decoding...")
                     let duration = await AudioUtil.audioDuration(url: tempURL)
                     let text = try await transcriptionService.transcribeAudio(url: tempURL, settings: Settings())
+                    let recordingId = UUID()
+
+                    let (processed, _) = await BrainFlowIntegrationSender.shared.send(
+                        audioURL: tempURL,
+                        transcription: text,
+                        recordingId: recordingId.uuidString,
+                        clipboardText: ClipboardMonitor.shared.currentText()
+                    )
 
                     if text.isEmpty {
                         try? FileManager.default.removeItem(at: tempURL)
@@ -197,12 +205,12 @@ class ContentViewModel: ObservableObject {
                     } else {
                         let timestamp = Date()
                         let fileName = "\(Int(timestamp.timeIntervalSince1970)).wav"
-                        let recordingId = UUID()
-                        let newRecording = Recording(
+                        var newRecording = Recording(
                             id: recordingId,
                             timestamp: timestamp,
                             fileName: fileName,
                             transcription: text,
+                            processedText: processed?.isEmpty == false ? processed : nil,
                             duration: duration,
                             status: .completed,
                             progress: 1.0,
@@ -448,6 +456,11 @@ struct ContentView: View {
                                         onRegenerate: {
                                             Task {
                                                 await TranscriptionQueue.shared.requeueRecording(recording)
+                                            }
+                                        },
+                                        onUpdate: { updated in
+                                            if let index = viewModel.recordings.firstIndex(where: { $0.id == updated.id }) {
+                                                viewModel.recordings[index] = updated
                                             }
                                         }
                                     )
@@ -729,9 +742,11 @@ struct RecordingRow: View {
     let searchQuery: String
     let onDelete: () -> Void
     let onRegenerate: () -> Void
+    let onUpdate: (Recording) -> Void
     @StateObject private var audioRecorder = AudioRecorder.shared
     @State private var showTranscription = false
     @State private var isHovered = false
+    @State private var brainFlowError: String?
     @Environment(\.colorScheme) private var colorScheme
 
     private var isPlaying: Bool {
@@ -762,10 +777,11 @@ struct RecordingRow: View {
     }
     
     private var displayText: String {
-        if recording.transcription.isEmpty || recording.transcription == "Starting transcription..." || recording.transcription == "In queue..." {
+        let text = recording.processedText ?? recording.transcription
+        if text.isEmpty || text == "Starting transcription..." || text == "In queue..." {
             return ""
         }
-        return recording.transcription
+        return text
     }
 
     var body: some View {
@@ -937,9 +953,38 @@ struct RecordingRow: View {
                         .transition(.opacity)
 
                         Button(action: {
+                            Task {
+                                let (processed, error) = await BrainFlowIntegrationSender.shared.send(
+                                    audioURL: recording.url,
+                                    transcription: recording.transcription,
+                                    recordingId: recording.id.uuidString,
+                                    clipboardText: ClipboardMonitor.shared.currentText()
+                                )
+                                await MainActor.run {
+                                    brainFlowError = error
+                                }
+                                if let processed = processed, !processed.isEmpty {
+                                    var updatedRecording = recording
+                                    updatedRecording.processedText = processed
+                                    try? await RecordingStore.shared.updateRecordingSync(updatedRecording)
+                                    await MainActor.run {
+                                        onUpdate(updatedRecording)
+                                    }
+                                }
+                            }
+                        }) {
+                            Image(systemName: "paperplane.fill")
+                                .font(.system(size: 18))
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Send to BrainFlow and apply processed output")
+                        .transition(.opacity)
+
+                        Button(action: {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(
-                                recording.transcription, forType: .string
+                                recording.processedText ?? recording.transcription, forType: .string
                             )
                         }) {
                             Image(systemName: "doc.on.doc.fill")
@@ -998,6 +1043,14 @@ struct RecordingRow: View {
             isHovered = hovering
         }
         .padding(.vertical, 4)
+        .alert("BrainFlow Error", isPresented: Binding(
+            get: { brainFlowError != nil },
+            set: { if !$0 { brainFlowError = nil } }
+        )) {
+            Button("OK") { brainFlowError = nil }
+        } message: {
+            Text(brainFlowError ?? "")
+        }
     }
 }
 

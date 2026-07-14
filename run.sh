@@ -48,15 +48,25 @@ fi
 # Check if build output contains BUILD FAILED or if the command failed
 if [[ $? -eq 0 ]] && [[ ! "$BUILD_OUTPUT" =~ "BUILD FAILED" ]]; then
     echo "Building successful!"
+
+    APP_PATH="./Build/Build/Products/Debug/OpenSuperWhisper.app"
+    echo "Ad-hoc signing app with entitlements..."
+    codesign --force --deep --sign - \
+        --identifier "ru.starmel.OpenSuperWhisper" \
+        --entitlements "OpenSuperWhisper/OpenSuperWhisper.entitlements" \
+        "$APP_PATH"
+
+    xattr -d com.apple.quarantine "$APP_PATH" 2>/dev/null || true
+
     if $JUST_BUILD; then
+        echo "Installing to Applications..."
+        ./install-to-applications.sh
         exit 0
     fi
     echo "Starting the app..."
-    # Remove quarantine attribute if exists
-    xattr -d com.apple.quarantine ./Build/Build/Products/Debug/OpenSuperWhisper.app 2>/dev/null || true
     # Run the app and show logs
-    ./Build/Build/Products/Debug/OpenSuperWhisper.app/Contents/MacOS/OpenSuperWhisper
+    "$APP_PATH/Contents/MacOS/OpenSuperWhisper"
 else
     echo "Build failed!"
     exit 1
-fi 
+fi

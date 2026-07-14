@@ -14,6 +14,7 @@ struct Recording: Identifiable, Codable, FetchableRecord, PersistableRecord, Equ
     let timestamp: Date
     let fileName: String
     var transcription: String
+    var processedText: String?
     let duration: TimeInterval
     var status: RecordingStatus
     var progress: Float
@@ -22,7 +23,7 @@ struct Recording: Identifiable, Codable, FetchableRecord, PersistableRecord, Equ
     var isRegeneration: Bool = false
     
     enum CodingKeys: String, CodingKey {
-        case id, timestamp, fileName, transcription, duration, status, progress, sourceFileURL
+        case id, timestamp, fileName, transcription, processedText, duration, status, progress, sourceFileURL
     }
 
     static func == (lhs: Recording, rhs: Recording) -> Bool {
@@ -61,6 +62,7 @@ struct Recording: Identifiable, Codable, FetchableRecord, PersistableRecord, Equ
         static let timestamp = Column(CodingKeys.timestamp)
         static let fileName = Column(CodingKeys.fileName)
         static let transcription = Column(CodingKeys.transcription)
+        static let processedText = Column(CodingKeys.processedText)
         static let duration = Column(CodingKeys.duration)
         static let status = Column(CodingKeys.status)
         static let progress = Column(CodingKeys.progress)
@@ -124,6 +126,17 @@ class RecordingStore: ObservableObject {
             if !columnNames.contains("sourceFileURL") {
                 try db.alter(table: Recording.databaseTableName) { t in
                     t.add(column: "sourceFileURL", .text)
+                }
+            }
+        }
+        
+        migrator.registerMigration("v3_add_processed_text") { db in
+            let columns = try db.columns(in: Recording.databaseTableName)
+            let columnNames = columns.map { $0.name }
+            
+            if !columnNames.contains("processedText") {
+                try db.alter(table: Recording.databaseTableName) { t in
+                    t.add(column: "processedText", .text)
                 }
             }
         }
@@ -482,7 +495,10 @@ class RecordingStore: ObservableObject {
         do {
             return try dbQueue.read { db in
                 try Recording
-                    .filter(Recording.Columns.transcription.like("%\(query)%").collating(.nocase))
+                    .filter(
+                        Recording.Columns.transcription.like("%\(query)%").collating(.nocase)
+                        || Recording.Columns.processedText.like("%\(query)%").collating(.nocase)
+                    )
                     .order(Recording.Columns.timestamp.desc)
                     .limit(100)
                     .fetchAll(db)
@@ -497,7 +513,10 @@ class RecordingStore: ObservableObject {
         do {
             return try await dbQueue.read { db in
                 try Recording
-                    .filter(Recording.Columns.transcription.like("%\(query)%").collating(.nocase))
+                    .filter(
+                        Recording.Columns.transcription.like("%\(query)%").collating(.nocase)
+                        || Recording.Columns.processedText.like("%\(query)%").collating(.nocase)
+                    )
                     .order(Recording.Columns.timestamp.desc)
                     .limit(limit, offset: offset)
                     .fetchAll(db)

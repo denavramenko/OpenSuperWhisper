@@ -130,6 +130,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
 
         OpenSuperWhisperApp.startTranscriptionQueue()
+        ClipboardMonitor.shared.start()
         observeMicrophoneChanges()
         
         IndicatorWindowManager.shared.warmUp()
